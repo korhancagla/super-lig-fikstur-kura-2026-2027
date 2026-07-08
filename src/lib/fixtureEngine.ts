@@ -79,19 +79,30 @@ type FixedFirstHalfMatch = {
   awayTeamId: string;
 };
 
+type FirstHalfRuleState = {
+  bigFourOpponentMasks: Record<string, number>;
+  bigFourHomeCounts: Record<string, number>;
+  bigFourAwayCounts: Record<string, number>;
+};
+
 const FIRST_HALF_WEEKS = 17;
 const TOTAL_WEEKS = 34;
-const BIG_FOUR_TARGET_WEEKS = [5, 6, 10, 11, 15, 16];
-const EUROPEAN_RESTRICTED_FIRST_HALF = [1, 2, 3, 7, 10, 14, 17];
+const BIG_FOUR_TARGET_WEEKS = [4, 6, 8, 9, 13, 15];
+const DERBY_FORBIDDEN_FULL_WEEKS = [1, 2, 11, 17, 18, 22, 28, 31];
+const EUROPEAN_RESTRICTED_FULL_WEEKS = [1, 2, 8, 18, 22, 25, 28];
+const EUROPEAN_RESTRICTED_GENERATION_FIRST_HALF = [
+  ...new Set(EUROPEAN_RESTRICTED_FULL_WEEKS.map((week) => (week > FIRST_HALF_WEEKS ? week - FIRST_HALF_WEEKS : week))),
+].sort((weekA, weekB) => weekA - weekB);
 const FULL_MASK = (1 << FIRST_HALF_WEEKS) - 1;
-const EXACT_COVER_NODE_CAP = 90_000;
+const EXACT_COVER_NODE_CAP = 420_000;
+const BIG_FOUR_WINDOW_WEEKS = 7;
+const REGULAR_FOLLOW_SOFT_LIMIT = 5;
+const TRABZONSPOR_ID = "trabzonspor";
 
 const BIG_FOUR_TARGET_INDEXES = BIG_FOUR_TARGET_WEEKS.map((week) => week - 1);
-const EUROPEAN_RESTRICTED_FIRST_HALF_SET = new Set(EUROPEAN_RESTRICTED_FIRST_HALF);
-const EUROPEAN_RESTRICTED_FULL_SET = new Set([
-  ...EUROPEAN_RESTRICTED_FIRST_HALF,
-  ...EUROPEAN_RESTRICTED_FIRST_HALF.map((week) => week + FIRST_HALF_WEEKS),
-]);
+const DERBY_FORBIDDEN_FULL_SET = new Set(DERBY_FORBIDDEN_FULL_WEEKS);
+const EUROPEAN_RESTRICTED_GENERATION_FIRST_HALF_SET = new Set(EUROPEAN_RESTRICTED_GENERATION_FIRST_HALF);
+const EUROPEAN_RESTRICTED_FULL_SET = new Set(EUROPEAN_RESTRICTED_FULL_WEEKS);
 
 function hashSeed(seed: string | number): number {
   const input = String(seed);
@@ -239,6 +250,101 @@ function isBigFourPair(teamA: Team, teamB: Team): boolean {
 
 function isBigThreePair(teamA: Team, teamB: Team): boolean {
   return teamA.tags.bigThree && teamB.tags.bigThree;
+}
+
+function createFirstHalfRuleState(teams: Team[]): FirstHalfRuleState {
+  return {
+    bigFourOpponentMasks: Object.fromEntries(teams.map((team) => [team.id, 0])),
+    bigFourHomeCounts: Object.fromEntries(teams.map((team) => [team.id, 0])),
+    bigFourAwayCounts: Object.fromEntries(teams.map((team) => [team.id, 0])),
+  };
+}
+
+function getBigFourHomeAwayLimit(team: Team, opponent: Team): number {
+  return team.id === TRABZONSPOR_ID && opponent.tags.bigThree ? 2 : 3;
+}
+
+function wouldCreateBigFourSpacingViolation(currentMask: number, weekIndex: number): boolean {
+  const candidateMask = currentMask | (1 << weekIndex);
+  const fullSeasonBigFourWeeks: number[] = [];
+
+  for (let firstHalfWeekIndex = 0; firstHalfWeekIndex < FIRST_HALF_WEEKS; firstHalfWeekIndex += 1) {
+    if ((candidateMask & (1 << firstHalfWeekIndex)) === 0) {
+      continue;
+    }
+
+    fullSeasonBigFourWeeks.push(firstHalfWeekIndex + 1, firstHalfWeekIndex + 1 + FIRST_HALF_WEEKS);
+  }
+
+  fullSeasonBigFourWeeks.sort((weekA, weekB) => weekA - weekB);
+
+  for (let index = 1; index < fullSeasonBigFourWeeks.length; index += 1) {
+    if (fullSeasonBigFourWeeks[index] - fullSeasonBigFourWeeks[index - 1] === 1) {
+      return true;
+    }
+  }
+
+  for (let startWeek = 1; startWeek <= TOTAL_WEEKS - BIG_FOUR_WINDOW_WEEKS + 1; startWeek += 1) {
+    const countInWindow = fullSeasonBigFourWeeks.filter(
+      (week) => week >= startWeek && week < startWeek + BIG_FOUR_WINDOW_WEEKS,
+    ).length;
+
+    if (countInWindow > 2) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function canApplyFirstHalfRuleMatch(homeTeam: Team, awayTeam: Team, weekIndex: number, state: FirstHalfRuleState): boolean {
+  return canApplyTeamSide(homeTeam, awayTeam, true, weekIndex, state) && canApplyTeamSide(awayTeam, homeTeam, false, weekIndex, state);
+}
+
+function applyFirstHalfRuleMatch(homeTeam: Team, awayTeam: Team, weekIndex: number, state: FirstHalfRuleState, direction: 1 | -1): void {
+  applyTeamSide(homeTeam, awayTeam, true, weekIndex, state, direction);
+  applyTeamSide(awayTeam, homeTeam, false, weekIndex, state, direction);
+}
+
+function canApplyTeamSide(
+  team: Team,
+  opponent: Team,
+  isHome: boolean,
+  weekIndex: number,
+  state: FirstHalfRuleState,
+): boolean {
+  if (!opponent.tags.bigFour) {
+    return true;
+  }
+
+  const currentMask = state.bigFourOpponentMasks[team.id] ?? 0;
+
+  if (wouldCreateBigFourSpacingViolation(currentMask, weekIndex)) {
+    return false;
+  }
+
+  const currentCount = isHome ? state.bigFourHomeCounts[team.id] ?? 0 : state.bigFourAwayCounts[team.id] ?? 0;
+  return currentCount + 1 <= getBigFourHomeAwayLimit(team, opponent);
+}
+
+function applyTeamSide(
+  team: Team,
+  opponent: Team,
+  isHome: boolean,
+  weekIndex: number,
+  state: FirstHalfRuleState,
+  direction: 1 | -1,
+): void {
+  if (!opponent.tags.bigFour) {
+    return;
+  }
+
+  const weekMask = 1 << weekIndex;
+  state.bigFourOpponentMasks[team.id] =
+    direction === 1 ? (state.bigFourOpponentMasks[team.id] ?? 0) | weekMask : (state.bigFourOpponentMasks[team.id] ?? 0) & ~weekMask;
+
+  const countMap = isHome ? state.bigFourHomeCounts : state.bigFourAwayCounts;
+  countMap[team.id] = (countMap[team.id] ?? 0) + direction;
 }
 
 export function generateDrawNumbers(teams: Team[], seed: string): Record<string, number> {
@@ -514,7 +620,7 @@ function assignBigFourTargetWeeks(
         break;
       }
 
-      if (EUROPEAN_RESTRICTED_FIRST_HALF_SET.has(weekIndex + 1) && isEuropeanRestrictedPair(teamA, teamB)) {
+      if (EUROPEAN_RESTRICTED_GENERATION_FIRST_HALF_SET.has(weekIndex + 1) && isEuropeanRestrictedPair(teamA, teamB)) {
         possible = false;
         break;
       }
@@ -612,7 +718,7 @@ function solveFirstHalfExactCover(
           continue;
         }
 
-        if (EUROPEAN_RESTRICTED_FIRST_HALF_SET.has(weekIndex + 1) && isEuropeanRestrictedPair(firstTeam, secondTeam)) {
+        if (EUROPEAN_RESTRICTED_GENERATION_FIRST_HALF_SET.has(weekIndex + 1) && isEuropeanRestrictedPair(firstTeam, secondTeam)) {
           continue;
         }
 
@@ -696,10 +802,12 @@ function solveFirstHalfExactCover(
       teamBusyMasks[selectedPair.secondTeamIndex] |= weekMask;
 
       const firstIsHome = patternsByTeamId[selectedPair.firstTeam.id].bits[weekIndex] === 1;
+      const homeTeam = firstIsHome ? selectedPair.firstTeam : selectedPair.secondTeam;
+      const awayTeam = firstIsHome ? selectedPair.secondTeam : selectedPair.firstTeam;
       const match: FixtureMatch = {
         week: weekIndex + 1,
-        homeTeamId: firstIsHome ? selectedPair.firstTeam.id : selectedPair.secondTeam.id,
-        awayTeamId: firstIsHome ? selectedPair.secondTeam.id : selectedPair.firstTeam.id,
+        homeTeamId: homeTeam.id,
+        awayTeamId: awayTeam.id,
       };
 
       solution.push(match);
@@ -784,8 +892,12 @@ export function validateSchedule(schedule: FixtureSchedule): ConstraintResult[] 
   results.push(validateSymmetricFixture(schedule));
   results.push(validateBasicRoundRobin(schedule));
   results.push(validateHomeAwaySequences(schedule));
+  results.push(validateRegularFollower(schedule));
+  results.push(validateBigFourOpponentDistribution(schedule));
+  results.push(validateBigFourOpponentSpacing(schedule));
   results.push(validateBigThreeHomeLimit(schedule));
   results.push(validateBigThreeDerbyBalance(schedule));
+  results.push(validateDerbyForbiddenWeeks(schedule));
   results.push(validateBigFourWeeks(schedule));
   results.push(validateEuropeanRestriction(schedule));
   results.push(validateIstanbulHomeLimit(schedule));
@@ -975,6 +1087,198 @@ export function validateSchedule(schedule: FixtureSchedule): ConstraintResult[] 
     };
   }
 
+  function validateRegularFollower(currentSchedule: FixtureSchedule): ConstraintResult {
+    const affectedWeeks: number[] = [];
+    const affectedTeams: string[] = [];
+    const explanations: string[] = [];
+    const opponentByTeamId = new Map<string, string[]>();
+    const sortedWeeks = [...currentSchedule.weeks].sort((weekA, weekB) => weekA.weekNumber - weekB.weekNumber);
+
+    for (const teamId of teamIds) {
+      opponentByTeamId.set(
+        teamId,
+        sortedWeeks.map((week) => {
+          const match = week.matches.find((entry) => entry.homeTeamId === teamId || entry.awayTeamId === teamId);
+
+          if (!match) {
+            return "";
+          }
+
+          return match.homeTeamId === teamId ? match.awayTeamId : match.homeTeamId;
+        }),
+      );
+    }
+
+    for (const leaderId of teamIds) {
+      const leaderOpponents = opponentByTeamId.get(leaderId) ?? [];
+
+      for (const followerId of teamIds) {
+        if (leaderId === followerId) {
+          continue;
+        }
+
+        const followerOpponents = opponentByTeamId.get(followerId) ?? [];
+        const followedWeeks: number[] = [];
+
+        for (let weekIndex = 1; weekIndex < TOTAL_WEEKS; weekIndex += 1) {
+          if (followerOpponents[weekIndex] && followerOpponents[weekIndex] === leaderOpponents[weekIndex - 1]) {
+            followedWeeks.push(weekIndex + 1);
+          }
+        }
+
+        if (followedWeeks.length > REGULAR_FOLLOW_SOFT_LIMIT) {
+          affectedTeams.push(leaderId, followerId);
+          affectedWeeks.push(...followedWeeks);
+          explanations.push(
+            `${teamsById.get(followerId)?.name ?? followerId} follows ${teamsById.get(leaderId)?.name ?? leaderId} ${followedWeeks.length} times`,
+          );
+        }
+      }
+    }
+
+    return {
+      id: "regular_follower",
+      name: "No regular team following",
+      passed: affectedTeams.length === 0,
+      severity: "soft",
+      explanation:
+        affectedTeams.length === 0
+          ? "No team repeatedly follows another team's opponent path above the transparent soft limit."
+          : `A team appears to regularly follow another team's opponent path. ${explanations.slice(0, 3).join("; ")}`,
+      affectedWeeks,
+      affectedTeams,
+    };
+  }
+
+  function validateBigFourOpponentDistribution(currentSchedule: FixtureSchedule): ConstraintResult {
+    const affectedWeeks: number[] = [];
+    const affectedTeams: string[] = [];
+    const explanations: string[] = [];
+
+    for (const team of currentSchedule.teams) {
+      for (const halfStartWeek of [1, FIRST_HALF_WEEKS + 1]) {
+        let homeAgainstBigFour = 0;
+        let awayAgainstBigFour = 0;
+        let trabzonHomeAgainstBigThree = 0;
+        let trabzonAwayAgainstBigThree = 0;
+        const violatingWeeks: number[] = [];
+
+        for (const week of currentSchedule.weeks.filter(
+          (entry) => entry.weekNumber >= halfStartWeek && entry.weekNumber < halfStartWeek + FIRST_HALF_WEEKS,
+        )) {
+          const match = week.matches.find((entry) => entry.homeTeamId === team.id || entry.awayTeamId === team.id);
+
+          if (!match) {
+            continue;
+          }
+
+          const isHome = match.homeTeamId === team.id;
+          const opponent = teamsById.get(isHome ? match.awayTeamId : match.homeTeamId);
+
+          if (!opponent?.tags.bigFour) {
+            continue;
+          }
+
+          if (isHome) {
+            homeAgainstBigFour += 1;
+          } else {
+            awayAgainstBigFour += 1;
+          }
+
+          if (team.id === TRABZONSPOR_ID && opponent.tags.bigThree) {
+            if (isHome) {
+              trabzonHomeAgainstBigThree += 1;
+            } else {
+              trabzonAwayAgainstBigThree += 1;
+            }
+          }
+
+          violatingWeeks.push(week.weekNumber);
+        }
+
+        if (homeAgainstBigFour > 3 || awayAgainstBigFour > 3) {
+          affectedTeams.push(team.id);
+          affectedWeeks.push(...violatingWeeks);
+          explanations.push(`${team.name}: ${homeAgainstBigFour} home / ${awayAgainstBigFour} away vs big four`);
+        }
+
+        if (team.id === TRABZONSPOR_ID && (trabzonHomeAgainstBigThree > 2 || trabzonAwayAgainstBigThree > 2)) {
+          affectedTeams.push(team.id);
+          affectedWeeks.push(...violatingWeeks);
+          explanations.push(
+            `${team.name}: ${trabzonHomeAgainstBigThree} home / ${trabzonAwayAgainstBigThree} away vs GS-FB-BJK`,
+          );
+        }
+      }
+    }
+
+    return {
+      id: "big_four_opponent_distribution",
+      name: "Big-four opponent home/away distribution",
+      passed: affectedTeams.length === 0,
+      severity: "soft",
+      explanation:
+        affectedTeams.length === 0
+          ? "In each half, no team has more than three home or away matches against the big four; Trabzonspor is capped at two against GS-FB-BJK."
+          : `One or more big-four home/away distribution limits failed. ${explanations.slice(0, 4).join("; ")}`,
+      affectedWeeks,
+      affectedTeams,
+    };
+  }
+
+  function validateBigFourOpponentSpacing(currentSchedule: FixtureSchedule): ConstraintResult {
+    const affectedWeeks: number[] = [];
+    const affectedTeams: string[] = [];
+    const explanations: string[] = [];
+
+    for (const team of currentSchedule.teams) {
+      const bigFourWeeks = currentSchedule.weeks
+        .filter((week) => {
+          const match = week.matches.find((entry) => entry.homeTeamId === team.id || entry.awayTeamId === team.id);
+
+          if (!match) {
+            return false;
+          }
+
+          const opponentId = match.homeTeamId === team.id ? match.awayTeamId : match.homeTeamId;
+          return teamsById.get(opponentId)?.tags.bigFour ?? false;
+        })
+        .map((week) => week.weekNumber)
+        .sort((weekA, weekB) => weekA - weekB);
+
+      for (let index = 1; index < bigFourWeeks.length; index += 1) {
+        if (bigFourWeeks[index] - bigFourWeeks[index - 1] === 1) {
+          affectedTeams.push(team.id);
+          affectedWeeks.push(bigFourWeeks[index - 1], bigFourWeeks[index]);
+          explanations.push(`${team.name}: consecutive weeks ${bigFourWeeks[index - 1]}-${bigFourWeeks[index]}`);
+        }
+      }
+
+      for (let startWeek = 1; startWeek <= TOTAL_WEEKS - BIG_FOUR_WINDOW_WEEKS + 1; startWeek += 1) {
+        const weeksInWindow = bigFourWeeks.filter((week) => week >= startWeek && week < startWeek + BIG_FOUR_WINDOW_WEEKS);
+
+        if (weeksInWindow.length > 2) {
+          affectedTeams.push(team.id);
+          affectedWeeks.push(...weeksInWindow);
+          explanations.push(`${team.name}: ${weeksInWindow.length} big-four matches in weeks ${startWeek}-${startWeek + 6}`);
+        }
+      }
+    }
+
+    return {
+      id: "big_four_opponent_spacing",
+      name: "Big-four opponent spacing",
+      passed: affectedTeams.length === 0,
+      severity: "soft",
+      explanation:
+        affectedTeams.length === 0
+          ? "No team plays the big four in consecutive weeks or three times in any seven-week window."
+          : `A team has too dense a run against the big four. ${explanations.slice(0, 4).join("; ")}`,
+      affectedWeeks,
+      affectedTeams,
+    };
+  }
+
   function validateBigThreeHomeLimit(currentSchedule: FixtureSchedule): ConstraintResult {
     const bigThreeIds = currentSchedule.teams.filter((team) => team.tags.bigThree).map((team) => team.id);
     const affectedWeeks: number[] = [];
@@ -1060,6 +1364,40 @@ export function validateSchedule(schedule: FixtureSchedule): ConstraintResult[] 
     };
   }
 
+  function validateDerbyForbiddenWeeks(currentSchedule: FixtureSchedule): ConstraintResult {
+    const affectedWeeks: number[] = [];
+    const affectedTeams: string[] = [];
+
+    for (const week of currentSchedule.weeks) {
+      if (!DERBY_FORBIDDEN_FULL_SET.has(week.weekNumber)) {
+        continue;
+      }
+
+      for (const match of week.matches) {
+        const homeTeam = teamsById.get(match.homeTeamId);
+        const awayTeam = teamsById.get(match.awayTeamId);
+
+        if (homeTeam?.tags.bigFour && awayTeam?.tags.bigFour) {
+          affectedWeeks.push(week.weekNumber);
+          affectedTeams.push(match.homeTeamId, match.awayTeamId);
+        }
+      }
+    }
+
+    return {
+      id: "derby_forbidden_weeks",
+      name: "Derby forbidden weeks",
+      passed: affectedWeeks.length === 0,
+      severity: "hard",
+      explanation:
+        affectedWeeks.length === 0
+          ? "Big-four derbies avoid the 2026-2027 forbidden derby weeks: 1, 2, 11, 17, 18, 22, 28 and 31."
+          : "A big-four derby is placed in one of the forbidden derby weeks.",
+      affectedWeeks,
+      affectedTeams,
+    };
+  }
+
   function validateBigFourWeeks(currentSchedule: FixtureSchedule): ConstraintResult {
     const bigFourTeams = currentSchedule.teams.filter((team) => team.tags.bigFour);
     const targetWeekSet = new Set(BIG_FOUR_TARGET_WEEKS);
@@ -1114,7 +1452,7 @@ export function validateSchedule(schedule: FixtureSchedule): ConstraintResult[] 
       severity: "hard",
       explanation:
         affectedWeeks.length === 0 && bigFourMatchCount === 6
-          ? "The six big-four matches are placed one each in weeks 5, 6, 10, 11, 15 and 16."
+          ? "The six big-four matches are placed one each in weeks 4, 6, 8, 9, 13 and 15."
           : "A big-four match is outside the requested target weeks, or a target week is missing its big-four match.",
       affectedWeeks,
       affectedTeams: affectedWeeks.length === 0 && bigFourMatchCount === 6 ? [] : bigFourMatchTeams,
@@ -1356,6 +1694,14 @@ export function scoreSchedule(schedule: FixtureSchedule): ScheduleScore {
     }
   }
 
+  const teamsById = getTeamMap(schedule.teams);
+  const weeksWithFourIstanbulHomeTeams = schedule.weeks.filter((week) => {
+    const homeIstanbulCount = week.matches.filter((match) => teamsById.get(match.homeTeamId)?.isIstanbulTeam).length;
+    return homeIstanbulCount === 4;
+  }).length;
+
+  softPenalty += weeksWithFourIstanbulHomeTeams * 25;
+
   return {
     hardPenalty,
     softPenalty,
@@ -1406,6 +1752,8 @@ export const fixtureEngineConstants = {
   firstHalfWeeks: FIRST_HALF_WEEKS,
   totalWeeks: TOTAL_WEEKS,
   bigFourTargetWeeks: BIG_FOUR_TARGET_WEEKS,
-  europeanRestrictedFirstHalf: EUROPEAN_RESTRICTED_FIRST_HALF,
-  europeanRestrictedSecondHalf: EUROPEAN_RESTRICTED_FIRST_HALF.map((week) => week + FIRST_HALF_WEEKS),
+  derbyForbiddenWeeks: DERBY_FORBIDDEN_FULL_WEEKS,
+  europeanRestrictedFullWeeks: EUROPEAN_RESTRICTED_FULL_WEEKS,
+  europeanRestrictedFirstHalf: EUROPEAN_RESTRICTED_FULL_WEEKS.filter((week) => week <= FIRST_HALF_WEEKS),
+  europeanRestrictedSecondHalf: EUROPEAN_RESTRICTED_FULL_WEEKS.filter((week) => week > FIRST_HALF_WEEKS),
 };

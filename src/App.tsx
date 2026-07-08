@@ -58,7 +58,7 @@ const highlightClubs = [
 function App() {
   const [teams, setTeams] = useState<Team[]>(defaultTeams);
   const [seed, setSeed] = useState("super-lig-2026-2027");
-  const [maxAttempts, setMaxAttempts] = useState(12);
+  const [maxAttempts, setMaxAttempts] = useState(80);
   const [drawResult, setDrawResult] = useState<DrawResult>(() => generateDrawResult(defaultTeams, "super-lig-2026-2027"));
   const [schedule, setSchedule] = useState<FixtureSchedule | null>(null);
   const [teamFilter, setTeamFilter] = useState("all");
@@ -261,7 +261,7 @@ function App() {
                     className="form-control dark-control"
                     type="number"
                     min={1}
-                    max={120}
+                    max={300}
                     value={maxAttempts}
                     onChange={(event) => setMaxAttempts(Number(event.target.value))}
                   />
@@ -302,7 +302,7 @@ function App() {
           <ConstraintChip icon={<Users />} title="Büyük 3 İç Saha Limiti" text="Her hafta en fazla 2 takım" />
           <ConstraintChip icon={<Building2 />} title="İstanbul Takım Limiti" text="Her hafta en fazla 4 takım" />
           <ConstraintChip icon={<CalendarDays />} title="İlk 2 / Son 3 Hafta" text="Üst üste iç/dış saha yok" />
-          <ConstraintChip icon={<Trophy />} title="Avrupa Kısıt Haftaları" text="1, 2, 3, 7, 10, 14, 17" />
+          <ConstraintChip icon={<Trophy />} title="Avrupa Kısıt Haftaları" text="1, 2, 8, 18, 22, 25, 28" />
           <div className="col-12 col-xl-auto ms-xl-auto">
             <div className="d-grid d-sm-flex gap-2">
               <button
@@ -761,9 +761,10 @@ function MatchRow({
   const isBigMatch = Boolean(homeTeam?.tags.bigFour && awayTeam?.tags.bigFour);
   const isIstanbulDerby = Boolean(homeTeam?.isIstanbulTeam && awayTeam?.isIstanbulTeam);
   const hasEuropeanWarning = Boolean(
-    fixtureEngineConstants.europeanRestrictedFirstHalf
-      .concat(fixtureEngineConstants.europeanRestrictedSecondHalf)
-      .includes(match.week) && homeTeam && awayTeam && isChampionsVsOtherEuropean(homeTeam, awayTeam),
+    fixtureEngineConstants.europeanRestrictedFullWeeks.includes(match.week) &&
+      homeTeam &&
+      awayTeam &&
+      isChampionsVsOtherEuropean(homeTeam, awayTeam),
   );
   const isBigFourDerby = bigClubIds.includes(match.homeTeamId) && bigClubIds.includes(match.awayTeamId);
   const highlightedTeamId = isBigFourDerby
